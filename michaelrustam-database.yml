@@ -1,0 +1,146 @@
+- name: Setup MariaDB and PHPMyAdmin
+  hosts: all
+  become: yes
+  vars:
+    mariadb_root_password: "password"
+    bind_address: "0.0.0.0"
+    ansible_python_interpreter: /usr/bin/python3
+    phpmyadmin_url: "https://www.phpmyadmin.net/downloads/phpMyAdmin-latest-all-languages.tar.gz"
+    phpmyadmin_download_dir: "/tmp/phpmyadmin"
+    phpmyadmin_install_dir: "/usr/share/phpmyadmin"
+
+  tasks:
+  - name: Install MySQL Python dependencies
+    yum:
+      name:
+      - python3-pip
+      - python3-devel
+      - gcc
+      state: present
+
+  - name: Install PyMySQL module
+    pip:
+      name: PyMySQL
+      state: present
+      executable: pip3
+
+  - name: Install MariaDB server and client
+    yum:
+      name:
+      - mariadb-server
+      - mariadb
+      state: present
+      update_cache: yes
+
+  - name: Start and enable MariaDB service
+    systemd:
+      name: mariadb
+      state: started
+      enabled: yes
+
+  - name: Set root password and secure MariaDB
+    mysql_user:
+      name: root
+      host: localhost
+      password: "{{ mariadb_root_password }}"
+      state: present
+      login_user: root
+      login_password: "{{ mariadb_root_password }}"
+
+  - name: Allow MariaDB root login from any host
+    mysql_user:
+      name: root
+      host: "%"
+      password: "{{ mariadb_root_password }}"
+      priv: "*.*:ALL,GRANT"
+      state: present
+      login_user: root
+      login_password: "{{ mariadb_root_password }}"
+
+  - name: Update MariaDB configuration to allow remote connections
+    lineinfile:
+      path: /etc/my.cnf.d/mariadb-server.cnf
+      regexp: '^bind-address'
+      line: "bind-address = {{ bind_address }}"
+      state: present
+    notify: Restart MariaDB
+
+  - name: Create database
+    mysql_db:
+      name: my_database
+      state: present
+      login_user: root
+      login_password: "{{ mariadb_root_password }}"
+
+  - name: Create database user
+    mysql_user:
+      name: my_user
+      password: my_password
+      priv: "my_database.*:ALL"
+      state: present
+      login_user: root
+      login_password: "{{ mariadb_root_password }}"
+
+  - name: Ensure PHPMyAdmin download directory exists
+    file:
+      path: "{{ phpmyadmin_download_dir }}"
+      state: directory
+
+  - name: Download PHPMyAdmin
+    get_url:
+      url: "{{ phpmyadmin_url }}"
+      dest: "{{ phpmyadmin_download_dir }}/phpmyadmin.tar.gz"
+
+  - name: List contents of download directory
+    command: ls -l "{{ phpmyadmin_download_dir }}"
+    register: list_dir
+
+  - name: Debug download directory contents
+    debug:
+      msg: "{{ list_dir.stdout }}"
+
+  - name: Extract PHPMyAdmin
+    unarchive:
+      src: "{{ phpmyadmin_download_dir }}/phpmyadmin.tar.gz"
+      dest: "{{ phpmyadmin_download_dir }}"
+      remote_src: yes
+
+  - name: List contents of extracted PHPMyAdmin directory
+    command: ls -l "{{ phpmyadmin_download_dir }}"
+    register: list_extracted
+
+  - name: Debug extracted directory contents
+    debug:
+      msg: "{{ list_extracted.stdout }}"
+
+  - name: Move PHPMyAdmin to the web directory
+    command: mv "{{ phpmyadmin_download_dir }}/phpMyAdmin-*" "{{ phpmyadmin_install_dir }}"
+
+  - name: Configure PHPMyAdmin
+    copy:
+      src: "phpmyadmin.conf"
+      dest: "/etc/httpd/conf.d/phpmyadmin.conf"
+      mode: '0644'
+
+  - name: Configure firewall to allow HTTP and HTTPS traffic
+    firewalld:
+      service: "{{ item }}"
+      permanent: yes
+      state: enabled
+    loop:
+    - http
+    - https
+
+  - name: Reload firewall to apply changes
+    command: firewall-cmd --reload
+
+  - name: Restart Apache service
+    systemd:
+      name: httpd
+      state: restarted
+
+  handlers:
+  - name: Restart MariaDB
+    systemd:
+      name: mariadb
+      state: restarted
